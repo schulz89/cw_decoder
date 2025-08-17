@@ -15,16 +15,14 @@
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-#define CW_IN 12
+#define CW_IN 12 // Digital pin 12 for CW (Morse code) signal input
 #define BUFFER_SIZE 500L
-#define TIMER_SETTING 15000 // 15000 corresponds to 60ms
-
-bool buffer[BUFFER_SIZE] = { false };
-char morse[BUFFER_SIZE / 2];
-char decoded[BUFFER_SIZE / 4];
-
-uint16_t counter = 0;
-bool end = false;
+#define TIMER_SETTING 15000           // Timer compare value: 15000 ticks = 60ms at 16MHz/64 prescaler
+bool buffer[BUFFER_SIZE] = { false }; // Raw digital samples from CW input
+char morse[BUFFER_SIZE / 2];          // Decoded morse code symbols (dots, dashes, spaces)
+char decoded[BUFFER_SIZE / 4];        // Final decoded text characters
+uint16_t counter = 0;                 // Sample counter for buffer array
+bool end = false;                     // Flag to signal end of CW transmission capture
 
 // (timer speed (Hz)) = (Arduino clock speed (16MHz)) / prescaler
 void setup_timer()
@@ -32,10 +30,10 @@ void setup_timer()
     noInterrupts();
     TCCR1A = 0;            // Reset entire TCCR1A register
     TCCR1B = 0;            // Reset entire TCCR1B register
-    TCCR1B |= B00000011;   // Set CS012 to 011 so we get prescaler 64
-    TIMSK1 |= B00000010;   // Set OCIE1A to 1 so we enable compare match A
-    OCR1A = TIMER_SETTING; // 15000 corresponds to 60ms
-    TCNT1 = 0;             // Reset Timer 1 value to 0
+    TCCR1B |= B00000011;   // Set CS012 bits to 011 for prescaler 64 (16MHz/64 = 250kHz)
+    TIMSK1 |= B00000010;   // Enable Timer1 Compare Match A interrupt (OCIE1A)
+    OCR1A = TIMER_SETTING; // Set compare value for 60ms intervals
+    TCNT1 = 0;             // Reset Timer 1 counter to 0
     interrupts();
 }
 
@@ -48,15 +46,15 @@ void setup()
 
 void loop()
 {
-    while (!digitalRead(CW_IN)) { // Wait for CW to start
+    while (!digitalRead(CW_IN)) { // Wait for CW transmission to start (HIGH signal)
     }
     end = false; // Restarting the cycle
     setup_timer();
-    bool previous = digitalRead(CW_IN);
+    bool previous = digitalRead(CW_IN); // Store previous pin state for edge detection
     while (!end) {
         bool current = digitalRead(CW_IN);
-        if(current != previous){
-            TCNT1 = TIMER_SETTING - 1; // Anticipates timer 1 underflow to synchronize with symbol speed
+        if (current != previous) {
+            TCNT1 = TIMER_SETTING - 1; // Reset timer on signal edge to sync with CW timing
             previous = current;
         }
     }
@@ -72,44 +70,44 @@ void loop()
 
 void bin_to_morse()
 {
-    memset(morse, 0, sizeof(morse));
-    uint16_t i = 0;
-    uint16_t j = 0;
+    memset(morse, 0, sizeof(morse)); // Clear morse array
+    uint16_t i = 0;                  // Buffer index
+    uint16_t j = 0;                  // Morse array index
     while (i < sizeof(buffer) && j < sizeof(morse)) {
         if (buffer[i] && !buffer[i + 1]) {
-            morse[j] = '.';
+            morse[j] = '.'; // Single HIGH sample = dot
             j++;
             i += 2;
         } else if (buffer[i] && buffer[i + 1] && buffer[i + 2] && !buffer[i + 3]) {
-            morse[j] = '-';
+            morse[j] = '-'; // Three consecutive HIGH samples = dash
             j++;
             i += 4;
         } else if (!buffer[i] && !buffer[i + 1] && !buffer[i + 2] && !buffer[i + 3]
             && !buffer[i + 4] && !buffer[i + 5] && !buffer[i + 6] && !buffer[i + 7]
             && !buffer[i + 8] && !buffer[i + 9] && !buffer[i + 10] && !buffer[i + 11]) {
-            morse[j] = ' ';
+            morse[j] = ' '; // 12 consecutive LOW samples = word separator
             morse[j + 1] = '/';
             morse[j + 2] = ' ';
             j += 3;
             i += 12;
         } else if (!buffer[i] && !buffer[i + 1] && !buffer[i + 2]) {
-            morse[j] = ' ';
+            morse[j] = ' '; // Three consecutive LOW samples = character separator
             j++;
             i += 3;
         } else {
-            i++;
+            i++; // Skip unrecognized patterns
         }
     }
-    buffer[j] = '\0';
+    buffer[j] = '\0'; // Null-terminate the morse string
 }
 
 void morse_to_characters()
 {
     uint16_t i = 0;
-    char* ptr = strtok(morse, " ");
+    char* ptr = strtok(morse, " "); // Tokenize morse string by spaces
     while (ptr != NULL) {
         // clang-format off
-             if(strcmp(ptr, "/"    ) == 0) { decoded[i] = ' '; }
+             if(strcmp(ptr, "/"    ) == 0) { decoded[i] = ' '; }   // Word separator
         else if(strcmp(ptr, "-----") == 0) { decoded[i] = '0'; }
         else if(strcmp(ptr, ".----") == 0) { decoded[i] = '1'; }
         else if(strcmp(ptr, "..---") == 0) { decoded[i] = '2'; }
@@ -146,26 +144,26 @@ void morse_to_characters()
         else if(strcmp(ptr, "-..-" ) == 0) { decoded[i] = 'X'; }
         else if(strcmp(ptr, "-.--" ) == 0) { decoded[i] = 'Y'; }
         else if(strcmp(ptr, "--.." ) == 0) { decoded[i] = 'Z'; }
-        else                               { decoded[i] = '?'; }
+        else                               { decoded[i] = '?'; }   // Unknown morse pattern
         // clang-format on
         i++;
-        if (i >= sizeof(decoded) - 1)
+        if (i >= sizeof(decoded) - 1) // Prevent buffer overflow
             break;
-        ptr = strtok(NULL, " ");
+        ptr = strtok(NULL, " "); // Get next token
     }
-    decoded[i] = '\0';
+    decoded[i] = '\0'; // Null-terminate decoded string
 }
 
-ISR(TIMER1_COMPA_vect) // Timer 1 interruption
+ISR(TIMER1_COMPA_vect) // Timer 1 interrupt service routine - called every 60ms
 {
-    TCNT1 = 0; // First, set the timer back to 0 so it resets for next interrupt
-    bool data = digitalRead(CW_IN);
-    digitalWrite(LED_BUILTIN, data); // Write new state to the LED
-    buffer[counter] = digitalRead(CW_IN);
+    TCNT1 = 0;                            // Reset timer counter for next interrupt
+    bool data = digitalRead(CW_IN);       // Read current CW signal state
+    digitalWrite(LED_BUILTIN, data);      // Mirror CW signal on built-in LED
+    buffer[counter] = digitalRead(CW_IN); // Store sample in buffer
     counter++;
     if (counter >= BUFFER_SIZE) {
-        TIMSK1 &= B11111101;
+        TIMSK1 &= B11111101; // Disable Timer1 Compare Match A interrupt
         counter = 0;
-        end = true;
+        end = true; // Signal that capture is complete
     }
 }
